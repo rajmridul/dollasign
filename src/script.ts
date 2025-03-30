@@ -36,6 +36,8 @@ interface YouTubePlaylistItem {
 interface YouTubePlaylistResponse {
     kind: string;
     etag: string;
+    nextPageToken?: string;  // Added nextPageToken field for pagination
+    prevPageToken?: string;  // Added prevPageToken field for completeness
     items: YouTubePlaylistItem[];
     pageInfo: {
         totalResults: number;
@@ -76,11 +78,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // YouTube API
     const YOUTUBE_PLAYLIST_ITEMS_API = 'https://www.googleapis.com/youtube/v3/playlistItems';
-    const PLAYLIST_ID = 'PLqZaUljTEMRrDl7UH2M7Ootg9iQwFTpCL';
+    const PLAYLIST_ID = 'PLqZaUljTEMRp51rcZTzmdiCuidTYSnK-I';
     
     // Load configuration
     const config = loadConfig();
     const API_KEY = config.youtubeApiKey;
+    
+    // Validate API key
+    if (API_KEY === 'YOUR_API_KEY_HERE' || !API_KEY) {
+        console.error('Invalid YouTube API key. Please set a valid API key in the configuration.');
+        alert('Please set a valid YouTube API key in the configuration before using this application.');
+    } else {
+        console.log('YouTube API key loaded successfully.');
+    }
 
     // State
     let isPlaying = false;
@@ -120,32 +130,142 @@ document.addEventListener('DOMContentLoaded', () => {
         return youtubeIframe;
     }
 
+    // Show loading indicator in album art
+    function showLoadingIndicator(message: string): void {
+        // Update album art to show loading state
+        albumArt.style.opacity = '0.5';
+        
+        // Create or update loading overlay
+        let loadingOverlay = document.getElementById('loadingOverlay');
+        if (!loadingOverlay) {
+            loadingOverlay = document.createElement('div');
+            loadingOverlay.id = 'loadingOverlay';
+            loadingOverlay.style.position = 'absolute';
+            loadingOverlay.style.top = '0';
+            loadingOverlay.style.left = '0';
+            loadingOverlay.style.width = '100%';
+            loadingOverlay.style.height = '100%';
+            loadingOverlay.style.display = 'flex';
+            loadingOverlay.style.flexDirection = 'column';
+            loadingOverlay.style.alignItems = 'center';
+            loadingOverlay.style.justifyContent = 'center';
+            loadingOverlay.style.backgroundColor = 'rgba(0, 0, 0, 0.7)';
+            loadingOverlay.style.zIndex = '10';
+            loadingOverlay.style.borderRadius = '15px';
+            albumArtContainer.appendChild(loadingOverlay);
+        }
+        
+        // Add loading spinner and message
+        loadingOverlay.innerHTML = `
+            <div style="width: 50px; height: 50px; border: 5px solid #333; 
+                 border-radius: 50%; border-top-color: #fff; 
+                 animation: spin 1s linear infinite;"></div>
+            <div style="margin-top: 15px; color: white; font-weight: bold;">${message}</div>
+        `;
+        
+        // Add the animation style
+        if (!document.getElementById('loadingSpinStyle')) {
+            const style = document.createElement('style');
+            style.id = 'loadingSpinStyle';
+            style.textContent = `
+                @keyframes spin {
+                    to { transform: rotate(360deg); }
+                }
+            `;
+            document.head.appendChild(style);
+        }
+    }
+    
+    // Hide loading indicator
+    function hideLoadingIndicator(): void {
+        albumArt.style.opacity = '1';
+        const loadingOverlay = document.getElementById('loadingOverlay');
+        if (loadingOverlay) {
+            loadingOverlay.remove();
+        }
+    }
+
     // Fetch YouTube playlist data
     async function fetchPlaylist(): Promise<Track[]> {
         try {
-            trackTitle.textContent = 'Loading YouTube Playlist...';
-            albumName.textContent = 'Please wait...';
+            showLoadingIndicator('Loading playlist...');
+            console.log("Starting to fetch playlist data...");
             
-            const response = await fetch(`${YOUTUBE_PLAYLIST_ITEMS_API}?part=snippet&maxResults=50&playlistId=${PLAYLIST_ID}&key=${API_KEY}`);
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
+            let allItems: YouTubePlaylistItem[] = [];
+            let nextPageToken: string | undefined = undefined;
+            let pageCount = 0;
             
-            const data: YouTubePlaylistResponse = await response.json();
+            // Loop to fetch all pages
+            do {
+                // Update loading message to show progress
+                if (pageCount > 0) {
+                    showLoadingIndicator(`Loading page ${pageCount + 1}...`);
+                    trackTitle.textContent = `Loading YouTube Playlist... (page ${pageCount + 1})`;
+                }
+                
+                // Construct URL with page token if available
+                const pageParam = nextPageToken ? `&pageToken=${nextPageToken}` : '';
+                const url = `${YOUTUBE_PLAYLIST_ITEMS_API}?part=snippet&maxResults=50&playlistId=${PLAYLIST_ID}&key=${API_KEY}${pageParam}`;
+                
+                console.log(`Fetching page ${pageCount + 1}, URL: ${url}`);
+                
+                const response = await fetch(url);
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const data: YouTubePlaylistResponse = await response.json();
+                console.log(`Received data for page ${pageCount + 1}:`, {
+                    items: data.items.length,
+                    nextPageToken: data.nextPageToken,
+                    totalResults: data.pageInfo.totalResults,
+                    resultsPerPage: data.pageInfo.resultsPerPage
+                });
+                
+                // Add items from this page to our collection
+                allItems = [...allItems, ...data.items];
+                
+                // Get token for the next page (if any)
+                nextPageToken = data.nextPageToken;
+                pageCount++;
+                
+                // Update loading message with track count
+                showLoadingIndicator(`Loaded ${allItems.length} tracks so far...`);
+                console.log(`Total tracks loaded so far: ${allItems.length}`);
+                
+                // Add a small delay to avoid hitting API rate limits
+                if (nextPageToken) {
+                    console.log(`Next page token found: ${nextPageToken}. Continuing to next page after delay.`);
+                    await new Promise(resolve => setTimeout(resolve, 300));
+                } else {
+                    console.log('No next page token. All pages fetched.');
+                }
+            } while (nextPageToken);
             
-            return data.items.map(item => ({
+            // Update UI to show how many tracks were loaded
+            trackTitle.textContent = `Loaded ${allItems.length} tracks`;
+            hideLoadingIndicator();
+            
+            console.log(`Finished fetching all playlist data. Total tracks: ${allItems.length}`);
+            
+            // Map the items to our Track format
+            const tracks = allItems.map(item => ({
                 id: item.snippet.resourceId.videoId,
                 title: item.snippet.title,
                 artist: item.snippet.videoOwnerChannelTitle || 'YouTube Artist',
                 album: 'YouTube Playlist',
                 thumbnail: item.snippet.thumbnails.high?.url || item.snippet.thumbnails.default?.url || ''
             }));
+            
+            console.log('Final mapped tracks:', tracks.length);
+            return tracks;
         } catch (error) {
             console.error('Error fetching playlist:', error);
             
             // Show error message
             trackTitle.textContent = 'Error loading playlist';
             albumName.textContent = 'Please check your API key or try again later';
+            hideLoadingIndicator();
             
             // Return some mock data to avoid breaking the app
             return [
@@ -162,8 +282,20 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Initialize playlist
     async function initializePlaylist(): Promise<void> {
+        // Show loading message
+        trackTitle.textContent = 'Loading YouTube Playlist...';
+        albumName.textContent = 'This may take a moment if the playlist is large';
+        
+        console.log('Initializing playlist...');
         playlistData = await fetchPlaylist();
+        console.log(`Fetch complete. Got ${playlistData.length} tracks.`);
+        
         filteredPlaylist = playlistData;
+        console.log('Initial filteredPlaylist set to all tracks.');
+        
+        // Show how many tracks were loaded in total
+        albumName.textContent = `${playlistData.length} tracks loaded successfully`;
+        
         renderAlbumList();
         filterAndRenderPlaylist();
         
@@ -172,6 +304,8 @@ document.addEventListener('DOMContentLoaded', () => {
         
         // Load the first track but don't play it yet
         loadTrack(0);
+        
+        console.log('Playlist initialization complete.');
     }
 
     // Get unique albums
@@ -201,11 +335,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Filter and render playlist
     function filterAndRenderPlaylist(): void {
+        console.log(`Filtering playlist. Current album: ${currentAlbum}, Total tracks in playlistData: ${playlistData.length}`);
+        
         filteredPlaylist = currentAlbum === 'All' ? 
             playlistData : playlistData.filter(track => track.album === currentAlbum);
         
+        console.log(`Filtered playlist now contains ${filteredPlaylist.length} tracks`);
+        
         currentAlbumTitle.textContent = currentAlbum === 'All' ? 'All Tracks' : currentAlbum;
         playlistEl.innerHTML = '';
+        
+        console.log(`Rendering ${filteredPlaylist.length} tracks in the playlist UI`);
         
         filteredPlaylist.forEach((track, index) => {
             const li = document.createElement('li');
@@ -220,6 +360,8 @@ document.addEventListener('DOMContentLoaded', () => {
             li.addEventListener('click', () => loadAndPlay(index));
             playlistEl.appendChild(li);
         });
+        
+        console.log(`Playlist UI rendering complete. ${playlistEl.childElementCount} items in the DOM.`);
     }
 
     // Load track
